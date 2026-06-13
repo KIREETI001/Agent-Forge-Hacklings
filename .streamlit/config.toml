@@ -1,0 +1,14 @@
+# SG UniNavigator — light & bright native theme.
+# These are Streamlit's built-in theme tokens; richer custom styling
+# (gradient hero, cards, pills, fonts) is layered on top in ui_theme.py.
+[theme]
+base = "light"
+primaryColor = "#2F6BFF"             # bright friendly blue — buttons / accents
+backgroundColor = "#F7FAFF"          # soft near-white app background
+secondaryBackgroundColor = "#FFFFFF" # cards / sidebar / inputs
+textColor = "#15233B"                # deep slate — strong contrast on white
+font = "sans serif"
+
+[client]
+# Cleaner chrome for the demo.
+toolbarMode = "minimal"

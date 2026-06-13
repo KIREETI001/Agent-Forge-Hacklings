@@ -1,0 +1,9 @@
+# SG UniNavigator — Python dependencies
+# Install:  pip install -r requirements.txt
+#
+# Pinned loosely for a hackathon; let pip resolve compatible versions.
+streamlit
+openai
+requests
+python-dotenv
+daytona-sdk
