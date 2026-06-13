@@ -75,7 +75,7 @@ with st.sidebar:
         "Rank Points",
         min_value=40,
         max_value=90,
-        value=int(float((parsed_intent or {}).get("student_rp", 75))),
+        value=int(float((parsed_intent or {}).get("student_rp") or 75)),
         step=1,
     )
     interest_fields = st.multiselect(

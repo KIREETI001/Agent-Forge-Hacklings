@@ -51,9 +51,11 @@ The routing flow is:
 
 Branch meanings:
 
-- EXPLORE: only RP is known, so keep it lightweight.
+- EXPLORE: use TechAsia plus live news to compare future paths.
 - EVALUATE: run Reddit, employment-links, TechAsia, and live news.
 - ADMISSION: run university cut-offs, Reddit, employment-links, TechAsia, live news, and Daytona.
+
+Every branch now consults Bright Data or news for reliable answers; EXPLORE no longer skips external signals.
 
 For the GES dataset, you can paste the page URL you shared into `GOV_DATA_URL`; the backend will normalize it into the underlying `datastore_search` API call automatically.
 

@@ -20,6 +20,35 @@ GES_DATASET_ID = "d_3c55210de27fcccda2ed0c63fdd2b352"
 NEWS_RSS_BASE_URL = "https://news.google.com/rss/search"
 
 FALLBACK_DATA: dict[str, list[dict[str, Any]]] = {
+    "Engineering": [
+        {
+            "course": "Mechanical Engineering",
+            "university": "NUS",
+            "status": "Strong prospects",
+            "salary_estimate": "$4,900",
+            "employment_rate": "92.1%",
+            "reddit_vibe": "Mixed",
+            "news_signal": "Asia manufacturing and robotics hiring remains steady",
+        },
+        {
+            "course": "Electrical Engineering",
+            "university": "NTU",
+            "status": "Strong prospects",
+            "salary_estimate": "$4,700",
+            "employment_rate": "91.4%",
+            "reddit_vibe": "Mixed",
+            "news_signal": "Semiconductor and systems roles continue to hire across Asia",
+        },
+        {
+            "course": "Civil Engineering",
+            "university": "SMU",
+            "status": "Stable prospects",
+            "salary_estimate": "$4,500",
+            "employment_rate": "90.0%",
+            "reddit_vibe": "Neutral",
+            "news_signal": "Infrastructure and urban development demand stays resilient",
+        },
+    ],
     "Computing": [
         {
             "course": "Information Systems",
@@ -192,7 +221,7 @@ def _normalize_news_query(interest: str) -> str:
     return f'{cleaned} jobs hiring OR salaries OR internships Asia'
 
 
-def _route_from_intent(student_rp: float, interest: str, priority_weights: dict[str, Any] | None = None) -> str:
+def _route_from_intent(student_rp: float | None, interest: str, priority_weights: dict[str, Any] | None = None) -> str:
     interest_lower = interest.lower().strip()
     if not interest_lower:
         return "EXPLORE"
@@ -213,7 +242,7 @@ def _route_from_intent(student_rp: float, interest: str, priority_weights: dict[
 def _heuristic_intent_from_text(raw_text: str) -> dict[str, Any]:
     lowered = raw_text.lower()
     rp_match = re.search(r"(\d{2}(?:\.\d{1,2})?)\s*rp", lowered)
-    student_rp = float(rp_match.group(1)) if rp_match else 75.0
+    student_rp = float(rp_match.group(1)) if rp_match else None
     if any(token in lowered for token in ("engineer", "engineering", "engineering courses", "mechanical", "electrical", "civil")):
         interest = "Engineering"
     elif any(token in lowered for token in ("computing", "computer", "software", "data", "ai", "cs")):
@@ -234,6 +263,8 @@ def _heuristic_intent_from_text(raw_text: str) -> dict[str, Any]:
         "fit": 0.35,
     }
     branch = _route_from_intent(student_rp, interest, priority_weights)
+    if any(token in lowered for token in ("future options", "future path", "options", "what can i do", "next step", "next steps")):
+        branch = "EXPLORE"
     return {
         "student_rp": student_rp,
         "interest": interest,
@@ -445,9 +476,10 @@ def build_tokenrouter_client(settings: PipelineSettings) -> OpenAI | None:
 
 
 def build_kimi_client(settings: PipelineSettings) -> OpenAI | None:
-    if not settings.kimi_api_key:
+    kimi_key = os.getenv("MOONSHOT_API_KEY", "").strip() or settings.kimi_api_key
+    if not kimi_key:
         return None
-    return OpenAI(api_key=settings.kimi_api_key, base_url=settings.kimi_base_url)
+    return OpenAI(api_key=kimi_key, base_url=settings.kimi_base_url)
 
 
 def extract_intent_with_kimi(raw_text: str) -> dict[str, Any]:
@@ -463,7 +495,7 @@ def extract_intent_with_kimi(raw_text: str) -> dict[str, Any]:
                     "role": "system",
                     "content": (
                         "Extract student admissions intent from freeform text. Return STRICT JSON only with keys: "
-                        "student_rp (number), interest (string), priority_weights (object with salary/workload/fit numbers), "
+                        "student_rp (number or null if not mentioned), interest (string), priority_weights (object with salary/workload/fit numbers), "
                         "normalized_query (string), branch (one of EXPLORE, EVALUATE, ADMISSION), confidence (number)."
                     ),
                 },
@@ -618,6 +650,11 @@ def _summary_usage(summary_result: dict[str, Any] | None) -> dict[str, Any]:
     return usage if isinstance(usage, dict) else {}
 
 
+def _fallback_rows_for_interest(interest: str) -> list[dict[str, Any]]:
+    normalized = interest.strip().title()
+    return FALLBACK_DATA.get(normalized, FALLBACK_DATA.get("Engineering", FALLBACK_DATA["Computing"]))
+
+
 def _local_summary_from_rows(rows: list[dict[str, Any]], query: str) -> str:
     if not rows:
         return f"No live data yet for {query}."
@@ -724,7 +761,7 @@ def classify_route(raw_text: str) -> dict[str, Any]:
 def _route_plan(intent: dict[str, Any]) -> dict[str, bool]:
     branch = str(intent.get("branch") or "EVALUATE").upper()
     if branch == "EXPLORE":
-        return {"need_uni": False, "need_reddit": False, "need_techasia": False, "need_news": False, "need_daytona": False}
+        return {"need_uni": False, "need_reddit": False, "need_techasia": True, "need_news": True, "need_daytona": False}
     if branch == "ADMISSION":
         return {"need_uni": True, "need_reddit": True, "need_techasia": True, "need_news": True, "need_daytona": True}
     return {"need_uni": False, "need_reddit": True, "need_techasia": True, "need_news": True, "need_daytona": False}
@@ -808,13 +845,14 @@ def route_and_scrape_with_sponsors_streaming(raw_text: str, use_fallback: bool =
         daytona_result = run_daytona_code(f"print({daytona_script!r})")
 
     summary_seed_rows = _safe_row_list(uni_rows, "title") + _safe_row_list(reddit_rows, "title") + _safe_row_list(techasia_rows, "title")
+    fallback_rows = _fallback_rows_for_interest(str(intent.get("interest", "Computing")))
     kimi_client = build_kimi_client(settings)
-    kimi_summary_result = summarize_with_kimi(kimi_client, summary_seed_rows or FALLBACK_DATA.get(str(intent.get("interest", "Computing")), FALLBACK_DATA["Computing"]), raw_text)
+    kimi_summary_result = summarize_with_kimi(kimi_client, summary_seed_rows or fallback_rows, raw_text)
     tokenrouter_client = build_tokenrouter_client(settings)
     tokenrouter_summary_result = polish_summary_with_tokenrouter(
         tokenrouter_client,
         _summary_text(kimi_summary_result),
-        summary_seed_rows or FALLBACK_DATA.get(str(intent.get("interest", "Computing")), FALLBACK_DATA["Computing"]),
+        summary_seed_rows or fallback_rows,
         raw_text,
         settings.tokenrouter_model,
     )
