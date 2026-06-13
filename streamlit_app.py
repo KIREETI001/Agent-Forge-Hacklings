@@ -30,8 +30,8 @@ from datetime import datetime
 
 import streamlit as st
 
-# Local modules.
-import agent_core
+# Local modules. (live_backend is imported lazily inside Live Mode so Demo
+# Mode never needs Person B's heavier scraping dependencies.)
 from agent_core import (
     route_query,
     INTENT_EXPLORE,
@@ -117,25 +117,50 @@ with st.container(border=True):
 # ──────────────────────────────────────────────────────────────────────────
 intent_obj = None
 result = None
+live_payload = None          # set in Live Mode from Person B's backend
 backend_error = None
 data_source = "CACHED" if demo_mode else "LIVE"
 scraped_age_min = FALLBACK_SNAPSHOT_AGE_MIN
 
 if query.strip():
     try:
-        if not demo_mode:
-            # Live Mode: surface the (stubbed) scrape pipeline as progress, then
-            # classify with the LLM. Branch figures still come from cached data
-            # until Person B wires real scrapers through scrape_and_score().
-            run_started = datetime.now()
-            with st.status("Live mode: classifying + gathering data…", expanded=False) as box:
-                for event in agent_core.scrape_and_score(student_rp, query):
-                    if event.get("type") == "status":
-                        box.write(f"• {event['message']}")
-                box.update(label="Live pass complete", state="complete")
-            scraped_age_min = max(0, int((datetime.now() - run_started).total_seconds() // 60))
+        if demo_mode:
+            # Demo Mode: my self-contained intent router over cached data.
+            intent_obj, result = route_query(query, student_rp, demo_mode=True)
+        else:
+            # Live Mode: stream Person B's agentic backend (live_backend.py).
+            # If Bright Data keys are present we run the real scrape; otherwise
+            # the backend's own fallback path runs so the demo still works.
+            import os
+            import live_backend
 
-        intent_obj, result = route_query(query, student_rp, demo_mode=demo_mode)
+            has_brightdata = bool(
+                os.getenv("BRIGHTDATA_API_KEY") or os.getenv("BRIGHTDATA_API_TOKEN")
+            )
+            run_started = datetime.now()
+            final_event = None
+            prog = st.progress(0.0, text="Starting live pipeline…")
+            with st.status("Live mode: routing + scraping via sponsors…", expanded=True) as box:
+                for event in live_backend.route_and_scrape_with_sponsors_streaming(
+                    query, use_fallback=not has_brightdata
+                ):
+                    msg = event.get("message")
+                    if msg:
+                        box.write(f"• {msg}")
+                    if event.get("progress") is not None:
+                        prog.progress(min(1.0, float(event["progress"])), text=msg or "Working…")
+                    if event.get("status") == "complete":
+                        final_event = event
+                box.update(label="Live pass complete", state="complete")
+            prog.empty()
+            scraped_age_min = max(0, int((datetime.now() - run_started).total_seconds() // 60))
+            if final_event is not None:
+                live_payload = {
+                    "branch": final_event.get("branch", "EVALUATE"),
+                    "data": final_event.get("data", []) or [],
+                    "summary": final_event.get("summary"),
+                    "used_fallback": not has_brightdata,
+                }
     except Exception as exc:  # noqa: BLE001 — surface any backend failure.
         backend_error = exc
         st.error(f"⚠️ Backend error while handling your query: {exc}")
@@ -155,6 +180,20 @@ if intent_obj is not None:
           <span class="intent-chip">classifier <b>{engine}</b></span>
           <span class="intent-chip">course <b>{course}</b></span>
           <span class="intent-chip">RP <b>{rp_val}</b></span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+if live_payload is not None:
+    src = "sponsor fallback" if live_payload["used_fallback"] else "live scrape"
+    st.markdown(
+        f"""
+        <div class="intent-bar">
+          {ui_theme.pill('🛰️ ' + live_payload['branch'], 'info')}
+          <span class="intent-chip">backend <b>Person B agents</b></span>
+          <span class="intent-chip">source <b>{src}</b></span>
+          <span class="intent-chip">rows <b>{len(live_payload['data'])}</b></span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -277,7 +316,49 @@ def render_admission(res):
     st.code("\n".join(res["math"]), language=None)
 
 
-if result is not None and backend_error is None:
+def render_live(payload):
+    """Render Person B's live backend results in the bright design language.
+
+    Person B's row contract differs from the Demo contract — keys are read
+    defensively with .get() since they vary by data source (Bright Data,
+    data.gov.sg GES, Asia news, fallback).
+    """
+    branch = payload["branch"]
+    ui_theme.section(
+        f"🛰️ Live — {branch.title()} pipeline",
+        "Person B's agentic backend: TokenRouter + Kimi routing · Bright Data · "
+        "data.gov.sg GES · Asia news"
+        + (" · sponsor fallback data" if payload["used_fallback"] else ""),
+    )
+    if payload.get("summary"):
+        st.markdown(f"**🧠 Summary** — {payload['summary']}")
+
+    rows = payload["data"]
+    if not rows:
+        st.warning(
+            "The live pipeline returned no rows. Tick **Demo Mode** for the cached experience."
+        )
+        return
+
+    table = [
+        {
+            "Course": r.get("course", "—"),
+            "University": r.get("university", "—"),
+            "Status": r.get("status", "—"),
+            "Salary": r.get("salary_estimate", "—"),
+            "Employment": r.get("employment_rate", "—"),
+            "Reddit Vibe": r.get("reddit_vibe", "—"),
+            "News Signal": r.get("news_signal") or r.get("techasia_signal") or "—",
+        }
+        for r in rows
+    ]
+    st.dataframe(table, use_container_width=True, hide_index=True)
+
+
+if live_payload is not None and backend_error is None:
+    with st.container(border=True):
+        render_live(live_payload)
+elif result is not None and backend_error is None:
     with st.container(border=True):
         intent = result.get("intent")
         if intent == INTENT_EXPLORE:
