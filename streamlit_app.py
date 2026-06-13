@@ -41,6 +41,12 @@ from agent_core import (
 from fallback_data import FALLBACK_SNAPSHOT_AGE_MIN
 import ui_theme
 
+# Voice input (browser speech-to-text). Optional — degrade gracefully if absent.
+try:
+    from streamlit_mic_recorder import speech_to_text
+except Exception:
+    speech_to_text = None
+
 # python-dotenv is optional; load .env if present so the LLM classifier can read
 # TokenRouter / Kimi keys. Never hard-fail the UI if it's missing.
 try:
@@ -80,36 +86,56 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.divider()
-    st.caption("Try these 👇")
-    st.code("What courses fit my RP?", language=None)
-    st.code("Tell me about SMU Information Systems", language=None)
-    st.code("Can I get into NUS Computer Science?", language=None)
+    st.caption("Try these 👇 (one tap fills the box)")
+    for _i, _ex in enumerate([
+        "What courses fit my RP?",
+        "Tell me about SMU Information Systems",
+        "Can I get into NUS Computer Science?",
+    ]):
+        if st.button(_ex, key=f"ex_{_i}", use_container_width=True):
+            st.session_state["query_text"] = _ex
 
 
 # ──────────────────────────────────────────────────────────────────────────
 # Inputs (inside a bright card)
 # ──────────────────────────────────────────────────────────────────────────
 with st.container(border=True):
-    query = st.text_input(
-        "Ask me anything about SG university courses",
-        value="What courses can I do with my RP?",
-        help="Free text. e.g. 'Can I get into NTU EEE?', 'Is NUS Business Analytics good?'",
-    )
-    col_rp, col_demo, col_btn = st.columns([1.1, 1.4, 1])
-    with col_rp:
-        student_rp = st.number_input(
-            "Your RP score",
-            min_value=0.0, max_value=90.0, value=85.0, step=0.5,
-            help="A-level University Admission Rank Points (0-90). Used for EXPLORE / ADMISSION.",
+    # Seed the query in session_state so the 🎤 voice button can populate it.
+    if "query_text" not in st.session_state:
+        st.session_state["query_text"] = "What courses can I do with my RP?"
+
+    q_col, mic_col = st.columns([6, 1])
+    with mic_col:
+        st.write("")
+        st.write("")
+        if speech_to_text is not None:
+            spoken = speech_to_text(
+                language="en", start_prompt="🎤", stop_prompt="⏹️",
+                just_once=True, use_container_width=True, key="stt",
+            )
+            if spoken:
+                st.session_state["query_text"] = spoken
+        else:
+            st.caption("🎤 n/a")
+    with q_col:
+        query = st.text_input(
+            "Ask me anything about SG uni courses — type or 🎤 speak 🌸",
+            key="query_text",
+            help="e.g. 'Can I get into NTU EEE?', 'Is NUS Business Analytics good?'",
         )
+
+    col_demo, col_btn = st.columns([2, 1])
     with col_demo:
         st.write("")
-        st.write("")
-        demo_mode = st.checkbox("Demo Mode (use cached data)", value=True)
+        demo_mode = st.checkbox("Demo Mode (use cached data)", value=False)
     with col_btn:
-        st.write("")
-        st.write("")
         run = st.button("Navigate ▶", type="primary", use_container_width=True)
+
+    # No separate RP box — the question IS the input. Derive an optional RP only
+    # if the student typed a number; else a quiet default for Demo Mode math.
+    import re as _re
+    _m = _re.search(r"\b([0-9]{1,2}(?:\.[0-9])?)\b", query or "")
+    student_rp = float(_m.group(1)) if (_m and 0.0 <= float(_m.group(1)) <= 90.0) else 85.0
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -122,27 +148,28 @@ backend_error = None
 data_source = "CACHED" if demo_mode else "LIVE"
 scraped_age_min = FALLBACK_SNAPSHOT_AGE_MIN
 
-if query.strip():
+# Live Mode hits paid sponsor APIs, so only run it on an explicit Navigate
+# click. Demo Mode is cheap/local, so it can render on every rerun.
+if query.strip() and (demo_mode or run):
     try:
         if demo_mode:
             # Demo Mode: my self-contained intent router over cached data.
             intent_obj, result = route_query(query, student_rp, demo_mode=True)
         else:
-            # Live Mode: stream Person B's agentic backend (live_backend.py).
-            # If Bright Data keys are present we run the real scrape; otherwise
-            # the backend's own fallback path runs so the demo still works.
-            import os
+            # Live Mode: the REAL agentic pipeline — NO fallback. Streams
+            # live_backend.py: Kimi intent -> route plan -> Bright Data + GES +
+            # Asia news + Daytona sandbox -> Kimi/TokenRouter synthesis. Errors
+            # surface honestly (we never mask a failed sponsor with demo data).
             import live_backend
 
-            has_brightdata = bool(
-                os.getenv("BRIGHTDATA_API_KEY") or os.getenv("BRIGHTDATA_API_TOKEN")
-            )
+            # The question IS the input. Kimi reads any RP from the text itself.
+            live_query = query.strip()
             run_started = datetime.now()
             final_event = None
             prog = st.progress(0.0, text="Starting live pipeline…")
             with st.status("Live mode: routing + scraping via sponsors…", expanded=True) as box:
                 for event in live_backend.route_and_scrape_with_sponsors_streaming(
-                    query, use_fallback=not has_brightdata
+                    live_query, use_fallback=False
                 ):
                     msg = event.get("message")
                     if msg:
@@ -159,7 +186,9 @@ if query.strip():
                     "branch": final_event.get("branch", "EVALUATE"),
                     "data": final_event.get("data", []) or [],
                     "summary": final_event.get("summary"),
-                    "used_fallback": not has_brightdata,
+                    "route_plan": final_event.get("route_plan") or {},
+                    "trace": final_event.get("trace") or {},
+                    "used_fallback": False,
                 }
     except Exception as exc:  # noqa: BLE001 — surface any backend failure.
         backend_error = exc
@@ -316,8 +345,85 @@ def render_admission(res):
     st.code("\n".join(res["math"]), language=None)
 
 
+def _short(text, n=90):
+    """Trim long free-text cell values so the table stays scannable."""
+    if not isinstance(text, str):
+        return text
+    text = text.strip()
+    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+def _render_sponsor_status(payload):
+    """Show which sponsors are configured and which actually ran this branch.
+
+    No fallback masking: a sponsor that's needed but missing its key/collector
+    shows as a warning so the real pipeline state is honest.
+    """
+    import os
+
+    plan = payload.get("route_plan") or {}
+    trace = payload.get("trace") or {}
+
+    def cfg(*names):
+        return any((os.getenv(n) or "").strip() for n in names)
+
+    bright = cfg("BRIGHTDATA_API_TOKEN", "BRIGHTDATA_API_KEY")
+    items = [
+        ("🧠 Kimi", cfg("KIMI_API_KEY", "MOONSHOT_API_KEY"), True),
+        ("🔀 TokenRouter", cfg("TOKENROUTER_API_KEY"), bool(trace.get("tokenrouter_usage"))),
+        ("🏫 BrightData·Uni", bright and cfg("BRIGHTDATA_UNI_COLLECTOR_ID"), bool(plan.get("need_uni"))),
+        ("💬 BrightData·Reddit", bright and cfg("BRIGHTDATA_REDDIT_COLLECTOR_ID"), bool(plan.get("need_reddit"))),
+        ("📰 BrightData·TechAsia", bright and cfg("BRIGHTDATA_TECHASIA_COLLECTOR_ID"), bool(plan.get("need_techasia"))),
+        ("🏛️ data.gov.sg GES", cfg("GOV_DATA_URL"), True),
+        ("🗞️ Asia News", True, bool(plan.get("need_news"))),
+        ("⚙️ Daytona", cfg("DAYTONA_API_KEY"), bool(plan.get("need_daytona"))),
+    ]
+    chips = []
+    for label, configured, ran in items:
+        if ran and configured:
+            kind, mark = "success", "✓ ran"
+        elif ran and not configured:
+            kind, mark = "warn", "needs key"
+        elif configured:
+            kind, mark = "info", "ready"
+        else:
+            kind, mark = "neutral", "off"
+        chips.append(ui_theme.pill(f"{label} · {mark}", kind))
+    st.markdown("**🛰️ Sponsor pipeline**", unsafe_allow_html=True)
+    st.markdown(" ".join(chips), unsafe_allow_html=True)
+    st.write("")
+
+
+def _render_daytona(payload):
+    """Surface the Daytona sandbox ranking (real in-sandbox compute)."""
+    import json as _json
+
+    dy = (payload.get("trace") or {}).get("daytona")
+    if not isinstance(dy, dict):
+        return
+    parsed = None
+    result = dy.get("result")
+    if isinstance(result, str):
+        try:
+            parsed = _json.loads(result)
+        except Exception:
+            parsed = None
+    if parsed and parsed.get("ranked"):
+        st.markdown("**⚙️ Daytona sandbox ranking** — *fit score computed in an isolated sandbox*")
+        st.dataframe(
+            [
+                {"Course": x.get("course"), "University": x.get("university"), "Fit score": x.get("fit_score")}
+                for x in parsed["ranked"]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+    elif dy.get("status") and dy.get("status") != "ok":
+        st.caption(f"⚙️ Daytona: {dy.get('status')} — {dy.get('message', '')}")
+
+
 def render_live(payload):
-    """Render Person B's live backend results in the bright design language.
+    """Render the live backend results: course table first, then summary.
 
     Person B's row contract differs from the Demo contract — keys are read
     defensively with .get() since they vary by data source (Bright Data,
@@ -325,34 +431,53 @@ def render_live(payload):
     """
     branch = payload["branch"]
     ui_theme.section(
-        f"🛰️ Live — {branch.title()} pipeline",
-        "Person B's agentic backend: TokenRouter + Kimi routing · Bright Data · "
-        "data.gov.sg GES · Asia news"
-        + (" · sponsor fallback data" if payload["used_fallback"] else ""),
+        f"🛰️ Live — {branch.title()} pipeline ✨",
+        "Real agentic run: Kimi routing · Bright Data · data.gov.sg GES · "
+        "Asia news · Daytona sandbox",
     )
-    if payload.get("summary"):
-        st.markdown(f"**🧠 Summary** — {payload['summary']}")
 
+    _render_sponsor_status(payload)
+
+    # 1) The list, as a table.
     rows = payload["data"]
-    if not rows:
-        st.warning(
-            "The live pipeline returned no rows. Tick **Demo Mode** for the cached experience."
+    if rows:
+        table = [
+            {
+                "Course": r.get("course", "—"),
+                "University": r.get("university", "—"),
+                "Status": r.get("status", "—"),
+                "Salary": r.get("salary_estimate", "—"),
+                "Employment": r.get("employment_rate", "—"),
+                "Reddit Vibe": _short(r.get("reddit_vibe", "—"), 36),
+                "News Signal": _short(r.get("news_signal") or r.get("techasia_signal") or "—"),
+            }
+            for r in rows
+        ]
+        st.dataframe(
+            table,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Salary": st.column_config.TextColumn("Salary", width="small"),
+                "Employment": st.column_config.TextColumn("Employment", width="small"),
+                "Reddit Vibe": st.column_config.TextColumn("Reddit Vibe", width="medium"),
+                "News Signal": st.column_config.TextColumn("News Signal", width="large"),
+            },
         )
-        return
+    else:
+        st.warning(
+            "No structured rows came back — check the sponsor pipeline above "
+            "(a key or collector may be missing). The agent's read is below 👇"
+        )
 
-    table = [
-        {
-            "Course": r.get("course", "—"),
-            "University": r.get("university", "—"),
-            "Status": r.get("status", "—"),
-            "Salary": r.get("salary_estimate", "—"),
-            "Employment": r.get("employment_rate", "—"),
-            "Reddit Vibe": r.get("reddit_vibe", "—"),
-            "News Signal": r.get("news_signal") or r.get("techasia_signal") or "—",
-        }
-        for r in rows
-    ]
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    # Daytona-computed ranking (real sandbox compute).
+    _render_daytona(payload)
+
+    # 2) Then the summary. Escape $ so salary figures don't render as LaTeX.
+    summary = payload.get("summary")
+    if summary:
+        st.markdown("**🧠 Summary**")
+        st.markdown(str(summary).replace("$", "\\$"))
 
 
 if live_payload is not None and backend_error is None:

@@ -253,29 +253,33 @@ def _classify_intent_rules(text, student_rp=None):
 
 
 def _get_llm_client():
-    """Build an OpenAI-SDK client for TokenRouter or Kimi, or None.
+    """Build a Kimi (Moonshot) client via the OpenAI-compatible SDK, or None.
 
-    Prefers TOKENROUTER_API_KEY, then KIMI_API_KEY. Returns None when no key
-    is present or the openai package isn't installed, so callers fall back to
-    the rules classifier. Keys come from the environment only (.env) — never
-    hardcoded.
+    Kimi is the brain. Prefers KIMI_API_KEY / MOONSHOT_API_KEY; falls back to
+    TokenRouter (also OpenAI-compatible, NOT OpenAI) only if Kimi is unset.
+    No OpenAI API key is ever read — the `openai` package is just the
+    OpenAI-compatible transport. Returns None when no key is present or the
+    package isn't installed, so callers fall back to the rules classifier.
+    Keys come from the environment only (.env) — never hardcoded.
     """
     try:
         from openai import OpenAI
     except Exception:
         return None
 
-    tr_key = os.getenv("TOKENROUTER_API_KEY")
-    if tr_key:
-        base = os.getenv("TOKENROUTER_BASE_URL", "https://api.tokenrouter.io/v1")
-        model = os.getenv("TOKENROUTER_MODEL", "moonshot-v1-8k")
-        return OpenAI(api_key=tr_key, base_url=base), model
-
-    kimi_key = os.getenv("KIMI_API_KEY")
+    # Kimi / Moonshot is the brain — try it first.
+    kimi_key = os.getenv("KIMI_API_KEY") or os.getenv("MOONSHOT_API_KEY")
     if kimi_key:
         base = os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
-        model = os.getenv("KIMI_MODEL", "moonshot-v1-8k")
+        model = os.getenv("KIMI_MODEL", "kimi-k2.6")
         return OpenAI(api_key=kimi_key, base_url=base), model
+
+    # Optional secondary: TokenRouter (OpenAI-compatible router, not OpenAI).
+    tr_key = os.getenv("TOKENROUTER_API_KEY")
+    if tr_key:
+        base = os.getenv("TOKENROUTER_BASE_URL", "https://api.tokenrouter.com/v1")
+        model = os.getenv("TOKENROUTER_MODEL", "kimi-k2.6")
+        return OpenAI(api_key=tr_key, base_url=base), model
 
     return None
 

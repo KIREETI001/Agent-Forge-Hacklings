@@ -1,28 +1,8 @@
-2026-06-13 14:44:30.611 Uvicorn server started on 0.0.0.0:8533
+2026-06-13 16:24:46.488 Uvicorn server started on 0.0.0.0:8533
 
   You can now view your Streamlit app in your browser.
 
   Local URL: http://localhost:8533
   Network URL: http://172.20.10.13:8533
-  External URL: http://119.234.5.180:8533
+  External URL: http://111.65.51.231:8533
 
-2026-06-13 14:45:31.426 Please replace `use_container_width` with `width`.
-
-`use_container_width` will be removed after 2025-12-31.
-
-For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
-Exception in callback _ProactorBasePipeTransport._call_connection_lost()
-handle: <Handle _ProactorBasePipeTransport._call_connection_lost()>
-Traceback (most recent call last):
-  File "C:\Python314\Lib\asyncio\events.py", line 94, in _run
-    self._context.run(self._callback, *self._args)
-    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Python314\Lib\asyncio\proactor_events.py", line 165, in _call_connection_lost
-    self._sock.shutdown(socket.SHUT_RDWR)
-    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
-ConnectionResetError: [WinError 10054] An existing connection was forcibly closed by the remote host
-2026-06-13 14:47:16.132 Please replace `use_container_width` with `width`.
-
-`use_container_width` will be removed after 2025-12-31.
-
-For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
